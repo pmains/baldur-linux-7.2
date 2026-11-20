@@ -15,6 +15,22 @@ TOOLCHAIN_IMAGE=baldur-toolchain:llvm18 scripts/build.sh /path/to/local-inputs /
 
 The build verifies every local input hash, disables container networking, and emits a RAM image and a receipt with its SHA-256 and source commit. Run the same commands twice in fresh checkouts with the same toolchain and inputs to compare checksums.
 
-## Scope
+## Feature status
 
-The tagged release notes identify the exact on-device results for this preview. Other Baldur trials cover different images. This preview uses firmware-supplied display state only where the bootloader leaves it available, and makes no display, GPU, or HTP workload claim. Use USB ACM and USB Ethernet to observe the trial.
+The **Verified** column records what ran together on one OnePlus 12 in the [Developer Preview 01 RAM trial](https://github.com/pmains/baldur-linux-7.2/releases/tag/v7.2.15-preview.1). Use the release tag to reproduce the tested image.
+
+| Component | Verified on Preview 01 | Still to validate or bring up |
+| --- | --- | --- |
+| Boot and recovery | Fastboot RAM boot and return to VT3 Linux 6.1 | Persistent boot and automatic fallback |
+| USB | CDC ACM logs and USB Ethernet with authenticated SSH | Cable reconnect on this exact image, USB-C role switching, and USB resume |
+| Internal storage | UFS enumeration and a read-only ext4 root | Writable root, recovery behavior, and UFS suspend/resume |
+| Wi-Fi | Qualcomm WCN7850 initialized via ath12k and registered a wireless PHY | Access-point association, data transfer, 802.11be link negotiation, and reconnect/resume |
+| Charging and battery | Battery manager reported USB charging status and battery telemetry | USB-C charging and fast charging |
+| PMIC ADC | Four channels read successfully: reference voltage, PMK8550 die temperature, system rail voltage, and battery voltage. Twelve reads produced twelve conversion interrupts. | Board thermistor readings and ADC threshold monitoring |
+| CPU thermal control | All four CPU policies throttled and recovered when their passive trips were temporarily lowered. A guarded 60-second CPU load test passed. | Longer workloads, battery and skin thermal limits, and GPU cooling |
+| Qualcomm DSPs and NPU | ADSP and CDSP booted, GLINK channels appeared, and the CDSP answered a FastRPC capability query | HTP inference and DSP workloads |
+| Display and GPU | | Visible console on this exact image, native DSI panel initialization, and an Adreno rendering or compute workload |
+| Other handset I/O | | Bluetooth, cellular data (MPSS), GNSS, touch, audio, NFC, camera, sensors, haptics, and fingerprint |
+| System power management | | End-to-end suspend/resume |
+
+Related trials used different RAM images. Those trials demonstrated a readable tty1 banner through the firmware display handoff, a USB cable reconnect with both ACM and SSH recovery, and an Adreno chip-ID read. The preview matrix counts only the checks repeated on the tagged image.
