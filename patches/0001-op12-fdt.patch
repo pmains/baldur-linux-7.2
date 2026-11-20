@@ -1,0 +1,768 @@
+diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -2508,6 +2508,24 @@
+ 
+ menu "Boot options"
+ 
++config ARM64_OP12_EARLY_FDT
++	bool "Experimental OnePlus12 bounded early FDT translation"
++	depends on OF && CMDLINE_FORCE && BLK_DEV_INITRD && ARM64_4K_PAGES
++	depends on INITRAMFS_SOURCE != ""
++	default n
++	help
++	  Default-off experimental phone-only early-PI translation. Requires an
++	  explicitly reviewed target DTB and built-in rescue initramfs. Never
++	  inherits external initrd or bootloader bootargs. Unknown chosen fields,
++	  unresolved dynamic pools or reservation conflicts stop early boot.
++	  No software recovery deadline exists at this stage. Not boot qualified.
++
++config ARM64_OP12_FDT_TEMPLATE
++	string "Prebuilt target DTB path relative to kernel output directory"
++	depends on ARM64_OP12_EARLY_FDT
++	default "arch/arm64/boot/dts/qcom/sm8650-waffle-experimental.dtb"
++
++
+ config ARM64_ACPI_PARKING_PROTOCOL
+ 	bool "Enable support for the ARM64 ACPI parking protocol"
+ 	depends on ACPI
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -516,6 +516,9 @@
+ 	mov	x0, x20				// pass the full boot status
+ 	mov	x1, x21				// pass the FDT
+ 	bl	__pi_early_map_kernel		// Map and relocate the kernel
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	mov	x21, x0				// Prepared physical FDT; boot_args retain original
++#endif
+ 
+ 	ldr	x8, =__primary_switched
+ 	adrp	x0, KERNEL_START		// __pa(KERNEL_START)
+diff --git a/arch/arm64/kernel/pi/pi.h b/arch/arm64/kernel/pi/pi.h
+--- a/arch/arm64/kernel/pi/pi.h
++++ b/arch/arm64/kernel/pi/pi.h
+@@ -33,6 +33,11 @@
+ 	       pgprot_t prot, int level, pte_t *tbl, bool may_use_cont,
+ 	       u64 va_offset);
+ 
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++#include "op12-fdt-merge.h"
++asmlinkage phys_addr_t early_map_kernel(u64 boot_status, phys_addr_t fdt);
++#else
+ asmlinkage void early_map_kernel(u64 boot_status, phys_addr_t fdt);
++#endif
+ 
+ asmlinkage phys_addr_t create_init_idmap(pgd_t *pgd, ptval_t clrmask);
+diff --git a/arch/arm64/kernel/pi/map_kernel.c b/arch/arm64/kernel/pi/map_kernel.c
+--- a/arch/arm64/kernel/pi/map_kernel.c
++++ b/arch/arm64/kernel/pi/map_kernel.c
+@@ -238,7 +238,11 @@
+ 	return true;
+ }
+ 
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++asmlinkage phys_addr_t __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
++#else
+ asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
++#endif
+ {
+ 	static char const chosen_str[] __initconst = "/chosen";
+ 	u64 va_base, pa_base = (u64)&_text;
+@@ -246,10 +250,19 @@
+ 	int root_level = 4 - CONFIG_PGTABLE_LEVELS;
+ 	int va_bits = VA_BITS;
+ 	int chosen;
+-	void *fdt_mapped = map_fdt(fdt);
++	void *fdt_mapped;
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	op12_fdt_pointer_check(fdt);
++#endif
++	fdt_mapped = map_fdt(fdt);
+ 
+ 	/* Clear BSS and the initial page tables */
+ 	memset(__bss_start, 0, (char *)init_pg_end - (char *)__bss_start);
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	/* Before chosen, feature overrides or KASLR consume any FDT data. */
++	fdt = op12_fdt_prepare(fdt);
++	fdt_mapped = (void *)(unsigned long)fdt;
++#endif
+ 
+ 	/* Parse the command line for CPU feature overrides */
+ 	chosen = fdt_path_offset(fdt_mapped, chosen_str);
+@@ -286,4 +299,7 @@
+ 
+ 	va_base = KIMAGE_VADDR + kaslr_offset;
+ 	map_kernel(kaslr_offset, va_base - pa_base, root_level);
+-}
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	return fdt;
++#endif
++}
+diff --git a/arch/arm64/kernel/pi/Makefile b/arch/arm64/kernel/pi/Makefile
+--- a/arch/arm64/kernel/pi/Makefile
++++ b/arch/arm64/kernel/pi/Makefile
+@@ -42,3 +42,16 @@
+ obj-$(CONFIG_RANDOMIZE_BASE)		+= kaslr_early.pi.o
+ obj-$(CONFIG_UNWIND_PATCH_PAC_INTO_SCS)	+= patch-scs.pi.o
+ targets					:= $(patsubst %.pi.o,%.o,$(obj-y))
++
++# Opt-in only: prebuild and review the target DTB in this output tree.
++obj-$(CONFIG_ARM64_OP12_EARLY_FDT) += op12-fdt-merge.pi.o op12-fdt-entry.pi.o \
++				     lib-fdt_rw.pi.o lib-fdt_wip.pi.o
++ifeq ($(CONFIG_ARM64_OP12_EARLY_FDT),y)
++op12-template := $(subst ",,$(CONFIG_ARM64_OP12_FDT_TEMPLATE))
++quiet_cmd_op12_dtb = GEN     $@
++      cmd_op12_dtb = $(PYTHON3) $(src)/gen_op12_dtb.py $(objtree)/$(op12-template) $@
++$(obj)/op12-target-data.h: $(objtree)/$(op12-template) $(src)/gen_op12_dtb.py FORCE
++	$(call if_changed,op12_dtb)
++$(obj)/op12-fdt-entry.o: $(obj)/op12-target-data.h
++targets += op12-target-data.h op12-fdt-merge.o op12-fdt-entry.o lib-fdt_rw.o lib-fdt_wip.o
++endif
+diff --git a/drivers/of/of_reserved_mem.c b/drivers/of/of_reserved_mem.c
+--- a/drivers/of/of_reserved_mem.c
++++ b/drivers/of/of_reserved_mem.c
+@@ -20,6 +20,10 @@
+ #include <linux/mm.h>
+ #include <linux/sizes.h>
+ #include <linux/of_reserved_mem.h>
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++#include <linux/op12_fdt_required.h>
++#include <linux/panic.h>
++#endif
+ #include <linux/sort.h>
+ #include <linux/slab.h>
+ #include <linux/memblock.h>
+@@ -332,6 +336,10 @@
+ {
+ 	int node, child;
+ 	int dynamic_nodes_cnt = 0, count = 0;
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	unsigned int op12_required_count = 0, op12_required_completed = 0;
++	uint64_t op12_required_total = 0;
++#endif
+ 	int dynamic_nodes[MAX_RESERVED_REGIONS];
+ 	const void *fdt = initial_boot_params;
+ 
+@@ -351,6 +359,15 @@
+ 		const char *uname;
+ 		int err;
+ 
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++		{
++			int required = op12_required_account(fdt, child,
++				&op12_required_count, &op12_required_total);
++			if (required < 0 || (required &&
++			    !of_fdt_device_is_available(fdt, child)))
++				panic("Invalid required early reservation");
++		}
++#endif
+ 		if (!of_fdt_device_is_available(fdt, child))
+ 			continue;
+ 
+@@ -371,6 +388,11 @@
+ 			continue;
+ 
+ 		if (dynamic_nodes_cnt == MAX_RESERVED_REGIONS) {
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++			if (op12_required_queue_result(fdt, child,
++				dynamic_nodes_cnt, MAX_RESERVED_REGIONS))
++				panic("Required early reservation queue exhausted");
++#endif
+ 			pr_err("too many defined dynamic regions, skip '%s'\n",
+ 			       uname);
+ 			continue;
+@@ -386,10 +408,21 @@
+ 		child = dynamic_nodes[i];
+ 		uname = fdt_get_name(fdt, child, NULL);
+ 		err = __reserved_mem_alloc_size(child, uname);
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++		if (op12_required_allocation_result(fdt, child, err))
++			panic("Required early reservation allocation failed");
++		if (op12_required_validate(fdt, child) == 1)
++			op12_required_completed++;
++#endif
+ 		if (!err)
+ 			count++;
+ 	}
+-	total_reserved_mem_cnt = count;
++#ifdef CONFIG_ARM64_OP12_EARLY_FDT
++	if (op12_required_completion(op12_required_count,
++			op12_required_completed))
++		panic("Required early reservation incomplete");
++#endif
++		total_reserved_mem_cnt = count;
+ 	return 0;
+ }
+ 
+diff --git a/arch/arm64/kernel/pi/op12-fdt-merge.c b/arch/arm64/kernel/pi/op12-fdt-merge.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kernel/pi/op12-fdt-merge.c
+@@ -0,0 +1,370 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Experimental bounded early-PI merge. No allocations, logging or drivers.
++ * Unknown chosen values and unresolved dynamic reservations fail closed.
++ */
++#ifdef __KERNEL__
++#include <linux/init.h>
++#include <linux/libfdt.h>
++#define OP12_INIT __init
++#define OP12_DATA __initconst
++#define OP12_WORK __initdata
++#else
++#include <libfdt.h>
++#include <stdint.h>
++#include <string.h>
++#define OP12_INIT
++#define OP12_DATA
++#define OP12_WORK
++#endif
++#include "op12-fdt-merge.h"
++#ifdef __KERNEL__
++#include <linux/op12_fdt_required.h>
++#else
++#include "op12_fdt_required.h"
++#endif
++#define TRY(x) do { int _r = (x); if (_r < 0) return _r; } while (0)
++#define BAD(x) do { if (!(x)) return -FDT_ERR_BADVALUE; } while (0)
++
++/* Primary-CPU-only scratch: integers, no pointers/heap/absolute relocations.
++ * A bounded open-addressed set replaces repeated whole-tree handle lookups. */
++static unsigned int validation_handles[16384] OP12_WORK = {1};
++static int OP12_INIT valid(const void *p, unsigned int bound)
++{
++ int at = 0, next = 0, depth = -1, roots = 0, nodes = 0;
++ unsigned int total, comparisons=2097152, probes=65536;
++ int parents[65], chosen_count=0, reserved_count=0, reserved_node=-1;
++ memset(validation_handles,0,sizeof(validation_handles));
++ BAD(bound >= sizeof(struct fdt_header) && bound <= OP12_FDT_CAP);
++ TRY(fdt_check_header(p)); BAD(fdt_version(p)==17); total = fdt_totalsize(p);
++ BAD(total >= sizeof(struct fdt_header) && total <= bound);
++ for (;;) {
++  unsigned int tag = fdt_next_tag(p, at, &next);
++  TRY(next); BAD(next > at && (unsigned int)next <= fdt_size_dt_struct(p));
++  if (tag == FDT_BEGIN_NODE) {
++   int len; const char *name=fdt_get_name(p,at,&len);
++   BAD(name && len>=0 && len<=128 && ++nodes<=8192); BAD(++depth<=64);
++   parents[depth]=at;
++   if (depth==0) { BAD(len==0); ++roots; }
++   TRY(op12_fdt_unique_properties_bounded(p,at,&comparisons));
++   if (depth==1) {
++    BAD(strncmp(name,"chosen@",7) && strncmp(name,"reserved-memory@",16));
++    if (!strcmp(name,"chosen")) BAD(++chosen_count==1);
++    if (!strcmp(name,"reserved-memory")) { BAD(++reserved_count==1); reserved_node=at; }
++   }
++   if ((depth==2 && parents[1]==reserved_node) ||
++       (depth==1 && fdt_getprop(p,at,"device_type",&len)))
++    BAD(fdt_subnode_offset_namelen(p,parents[depth-1],name,(int)strlen(name))==at);
++   { const fdt32_t *ph=fdt_getprop(p,at,"phandle",&len); unsigned int handle=0;
++    if (ph) { BAD(len==4); handle=fdt32_ld(ph); BAD(handle && handle!=0xffffffffU); }
++    ph=fdt_getprop(p,at,"linux,phandle",&len);
++    if (ph) { unsigned int old; BAD(len==4); old=fdt32_ld(ph); BAD(old && old!=0xffffffffU && (!handle || old==handle)); handle=old; }
++    if (handle) {
++     unsigned int slot=(handle*2654435761U)&16383U;
++     while (validation_handles[slot]) { BAD(probes-- && validation_handles[slot]!=handle); slot=(slot+1)&16383U; }
++     BAD(probes--); validation_handles[slot]=handle;
++    }
++   }
++  }
++  else if (tag == FDT_END_NODE) { BAD(depth >= 0); --depth; }
++  else if (tag == FDT_PROP) { int len; const char *name; BAD(depth>=0 && fdt_getprop_by_offset(p,at,&name,&len) && len>=0); }
++  else if (tag == FDT_END) { BAD(depth == -1 && roots == 1); break; }
++  else BAD(tag == FDT_NOP);
++  at = next;
++ }
++ TRY(fdt_num_mem_rsv(p));
++ return 0;
++}
++static int OP12_INIT noalias(const void *a, unsigned int as, const void *b, unsigned int bs)
++{
++ unsigned long x = (unsigned long)a, y = (unsigned long)b;
++ BAD(x + as >= x && y + bs >= y);
++ BAD(x + as <= y || y + bs <= x); return 0;
++}
++static int OP12_INIT two_cells(const void *p, int node)
++{
++ int n; const fdt32_t *v;
++ v = fdt_getprop(p,node,"#address-cells",&n); BAD(v && n==4 && fdt32_to_cpu(*v)==2);
++ v = fdt_getprop(p,node,"#size-cells",&n); BAD(v && n==4 && fdt32_to_cpu(*v)==2);
++ return 0;
++}
++static int OP12_INIT flag(const void *p,int node,const char *name)
++{
++ int n; const void *v=fdt_getprop(p,node,name,&n);
++ if (!v) return n == -FDT_ERR_NOTFOUND ? 0 : n;
++ return n == 0 ? 1 : -FDT_ERR_BADVALUE;
++}
++static int OP12_INIT interval(const void *raw,int n,uint64_t *base,uint64_t *size)
++{
++ const fdt64_t *v=raw;
++ BAD(v && n==16); *base=fdt64_ld(v); *size=fdt64_ld(v+1);
++ BAD(*base + *size >= *base); return 0;
++}
++static int OP12_INIT root_memory(const void *boot,void *out)
++{
++ int node=-1,depth=-1,found=0,dst,n; const char *type; const void *reg;
++ /* Drop template memory nodes. Fresh original banks alone are authoritative. */
++ while ((node=fdt_node_offset_by_prop_value(out,-1,"device_type","memory",7))>=0)
++  { BAD(fdt_parent_offset(out,node)==0); TRY(fdt_del_node(out,node)); }
++ BAD(node == -FDT_ERR_NOTFOUND);
++ dst=fdt_add_subnode(out,0,"memory"); TRY(dst);
++ TRY(fdt_setprop(out,dst,"device_type","memory",7));
++ for (node=fdt_next_node(boot,-1,&depth);node>=0 && depth>=0;node=fdt_next_node(boot,node,&depth)) {
++  type=fdt_getprop(boot,node,"device_type",&n);
++  if (!type || n!=7 || memcmp(type,"memory",7)) continue;
++  BAD(depth==1 && ++found<=8);
++  { int po;
++   for (po=fdt_first_property_offset(boot,node);po>=0;po=fdt_next_property_offset(boot,po)) {
++    int length; const char *key; BAD(fdt_getprop_by_offset(boot,po,&key,&length));
++    if (strcmp(key,"device_type") && strcmp(key,"reg") && strcmp(key,"status") && strcmp(key,"phandle") && strcmp(key,"linux,phandle") && strcmp(key,"ddr_device_type")) return -FDT_ERR_BADVALUE;
++   }
++   BAD(po==-FDT_ERR_NOTFOUND);
++  }
++  { int len; const char *status=fdt_getprop(boot,node,"status",&len);
++   BAD(!status || (len==5 && !memcmp(status,"okay",5)) || (len==3 && !memcmp(status,"ok",3)));
++  }
++  reg=fdt_getprop(boot,node,"reg",&n);
++  BAD(reg && n>0 && n%16==0 && n<=1024);
++  for (int at=0;at<n;at+=16) { uint64_t base,size; TRY(interval((const char *)reg+at,16,&base,&size)); }
++  TRY(fdt_appendprop(out,dst,"reg",reg,n));
++ }
++ BAD((node==-FDT_ERR_NOTFOUND || depth<0) && found);
++ reg=fdt_getprop(out,dst,"reg",&n); BAD(reg && n>0 && n<=1024);
++ { int positive=0;
++  for (int at=0;at<n;at+=16) { uint64_t b,s; TRY(interval((const char *)reg+at,16,&b,&s));
++   if (!s) continue; ++positive;
++   for (int prev=0;prev<at;prev+=16) { uint64_t pb,ps; TRY(interval((const char *)reg+prev,16,&pb,&ps)); BAD(!ps || b>=pb+ps || pb>=b+s); }
++  }
++  BAD(positive);
++ }
++ return 0;
++}
++static int OP12_INIT copy_reserve_map(const void *boot,void *out)
++{
++ int n=fdt_num_mem_rsv(boot); TRY(n); BAD(n<=64);
++ for (int i=0;i<n;++i) { uint64_t b,s; TRY(fdt_get_mem_rsv(boot,i,&b,&s)); BAD(s && b+s>=b); TRY(fdt_add_mem_rsv(out,b,s)); }
++ return 0;
++}
++/* Exact opt-in Waffle RAM-rescue exceptions: NOT a generic flag relaxation. */
++static int OP12_INIT enabled(const void *fdt,int node)
++{
++ while (node>=0) {
++  int len; const char *s=fdt_getprop(fdt,node,"status",&len);
++  if (s && !((len==5 && !memcmp(s,"okay",5)) || (len==3 && !memcmp(s,"ok",3)))) return 0;
++  node=fdt_parent_offset(fdt,node);
++ }
++ return 1;
++}
++static int OP12_INIT no_active_memory_consumer(const void *fdt,int region)
++{
++ unsigned int handle=fdt_get_phandle(fdt,region); int node=-1,depth=-1;
++ if (!handle) return 1;
++ for (node=fdt_next_node(fdt,-1,&depth);node>=0 && depth>=0;node=fdt_next_node(fdt,node,&depth)) {
++  int len; const fdt32_t *v=fdt_getprop(fdt,node,"memory-region",&len);
++  if (!v) continue;
++  if (len%4) return 0;
++  for (int i=0;i<len/4;++i) if (fdt32_ld(v+i)==handle && enabled(fdt,node)) return 0;
++ }
++ return node==-FDT_ERR_NOTFOUND || depth<0;
++}
++static int OP12_INIT reviewed_exception(const void *fdt,int other,uint64_t b,uint64_t s,int nm,int re,
++ uint64_t ob,uint64_t os,int onm,int ore)
++{
++ if (nm || !onm || ore || !no_active_memory_consumer(fdt,other)) return 0;
++ if (re && ob==b && os==s &&
++     ((b==0x82800000ULL && s==0x2000000ULL) ||
++      (b==0xf3800000ULL && s==0x4400000ULL) ||
++      (b==0xf7c00000ULL && s==0x4c00000ULL))) return 1;
++ return !re && b==0x81ce4000ULL && s==0x10000ULL &&
++        ob==0x81c80000ULL && os==0x75000ULL;
++}
++static int OP12_INIT fixed_covered(const void *out,int parent,uint64_t b,uint64_t s,int nm,int re,unsigned int *report)
++{
++ int other,overlaps=0,exceptions=0,count=0; uint64_t cursor=b,end=b+s;
++ for (other=fdt_first_subnode(out,parent);other>=0;other=fdt_next_subnode(out,other)) {
++  uint64_t ob,os; int len,onm,ore; const void *reg=fdt_getprop(out,other,"reg",&len);
++  BAD(++count<=128); if (!enabled(out,other) || !reg) continue; TRY(interval(reg,len,&ob,&os));
++  if (!os || b>=ob+os || ob>=end) continue; ++overlaps;
++  onm=flag(out,other,"no-map"); ore=flag(out,other,"reusable"); TRY(onm); TRY(ore);
++  if (onm!=nm || ore!=re) {
++   if (!reviewed_exception(out,other,b,s,nm,re,ob,os,onm,ore)) return OP12_FDT_RESERVATION_CONFLICT;
++   ++exceptions;
++  }
++ }
++ BAD(other==-FDT_ERR_NOTFOUND);
++ if (!overlaps) return 0;
++ if (exceptions) {
++  if (overlaps!=1) return OP12_FDT_RESERVATION_CONFLICT;
++  *report|=OP12_FDT_FIXED_FEATURES_DEFERRED; return 1;
++ }
++ /* Same-flag union coverage, overflow checked by interval(). */
++ while (cursor<end) {
++  uint64_t furthest=cursor;
++  for (other=fdt_first_subnode(out,parent);other>=0;other=fdt_next_subnode(out,other)) {
++   uint64_t ob,os; int len; const void *reg=fdt_getprop(out,other,"reg",&len);
++   if (!enabled(out,other) || !reg) continue; TRY(interval(reg,len,&ob,&os));
++   if (os && ob<=cursor && ob+os>furthest) furthest=ob+os;
++  }
++  BAD(other==-FDT_ERR_NOTFOUND);
++  if (furthest==cursor) return OP12_FDT_RESERVATION_CONFLICT;
++  cursor=furthest;
++ }
++ return 1;
++}
++static int OP12_INIT dynamic_copy(const void *boot,int node,void *out,unsigned int *count,uint64_t *total)
++{
++ int n,prop,nm,re,parent,added; const void *size,*alignment,*ranges;
++ uint64_t bytes,align=4096; const char *name=fdt_get_name(boot,node,&n);
++ static const char known[][32] OP12_DATA={"qseecom_region","qseecom_ta_region","qmc_dma_region","non_secure_display_region","vm_comm_mem_region","va_md_mem_region","sp_region","cdsp_eva_region","adsp_heap_region","linux,cma","secure_cdsp_region","debug_kinfo_region","ramoops_region","mem_dump_region","cnss_wlan_region"};
++ int recognized=0;
++ for (unsigned int i=0;i<sizeof(known)/sizeof(known[0]);++i) if (!strcmp(name,known[i])) recognized=1;
++ BAD(recognized && ++*count<=16);
++ for (prop=fdt_first_property_offset(boot,node);prop>=0;prop=fdt_next_property_offset(boot,prop)) {
++  const char *key; const void *v=fdt_getprop_by_offset(boot,prop,&key,&n); BAD(v && n>=0);
++  if (!strcmp(key,"size") || !strcmp(key,"alignment") || !strcmp(key,"alloc-ranges") || !strcmp(key,"no-map") || !strcmp(key,"reusable") || !strcmp(key,"phandle") || !strcmp(key,"linux,phandle")) continue;
++  if (!strcmp(key,"compatible")) {
++   BAD((n==16 && !memcmp(v,"shared-dma-pool",16)) || (n==8 && !memcmp(v,"ramoops",8))); continue;
++  }
++  if (!strcmp(key,"linux,cma-default")) { BAD(n==0 && !strcmp(name,"linux,cma")); continue; }
++  if (!strcmp(name,"ramoops_region") && (!strcmp(key,"pmsg-size") || !strcmp(key,"console-size") || !strcmp(key,"mem-type"))) { BAD(n==4); continue; }
++  return OP12_FDT_DYNAMIC_UNRESOLVED;
++ }
++ BAD(prop==-FDT_ERR_NOTFOUND);
++ size=fdt_getprop(boot,node,"size",&n); BAD(size && n==8); bytes=fdt64_ld(size);
++ BAD(bytes && bytes<=0x10000000ULL && *total<=0x20000000ULL-bytes); *total+=bytes;
++ nm=flag(boot,node,"no-map"); re=flag(boot,node,"reusable"); TRY(nm); TRY(re); BAD(!(nm&&re));
++ alignment=fdt_getprop(boot,node,"alignment",&n);
++ if (alignment) { BAD(n==8); align=fdt64_ld(alignment); BAD(align && !(align&(align-1)) && align<=0x400000ULL); }
++ ranges=fdt_getprop(boot,node,"alloc-ranges",&n); BAD(ranges && n>=16 && n<=128 && n%16==0);
++ { int memory=fdt_node_offset_by_prop_value(out,-1,"device_type","memory",7),len,possible=0;
++  const void *banks; TRY(memory); banks=fdt_getprop(out,memory,"reg",&len); BAD(banks && len>0 && len%16==0);
++  for (int at=0;at<n;at+=16) {
++   uint64_t rb,rs; TRY(interval((const char *)ranges+at,16,&rb,&rs)); BAD(rs);
++   for (int bi=0;bi<len;bi+=16) {
++    uint64_t mb,ms,start,end; TRY(interval((const char *)banks+bi,16,&mb,&ms));
++    start=rb>mb?rb:mb; end=rb+rs<mb+ms?rb+rs:mb+ms;
++    if (start>~(uint64_t)0-(align-1)) continue;
++    start=(start+align-1)&~(align-1);
++    if (start<end && bytes<=end-start) possible=1;
++   }
++  }
++  BAD(possible); /* Necessary only; memblock must actually allocate or halt. */
++ }
++ parent=fdt_path_offset(out,"/reserved-memory"); TRY(parent);
++ { char generated[]="op12-boot-dynamic-00"; generated[18]="0123456789abcdef"[(*count>>4)&15]; generated[19]="0123456789abcdef"[*count&15];
++  added=fdt_add_subnode(out,parent,generated); TRY(added);
++ }
++ { static const char props[][20] OP12_DATA={"size","alignment","alloc-ranges","no-map","reusable"};
++  for (unsigned int i=0;i<5;++i) { const void *v=fdt_getprop(boot,node,props[i],&n); if (v) TRY(fdt_setprop(out,added,props[i],v,n)); }
++ }
++ TRY(fdt_setprop(out,added,"op12,preserve-required",0,0)); BAD(op12_required_validate(out,added)==1); return 0;
++}
++static int OP12_INIT reservations(const void *boot,void *out,unsigned int *report)
++{
++ int src=fdt_path_offset(boot,"/reserved-memory"),dst=fdt_path_offset(out,"/reserved-memory"),node,count=0;
++ unsigned int dynamic_count=0; uint64_t dynamic_total=0;
++ TRY(src); TRY(dst); TRY(two_cells(boot,src)); TRY(two_cells(out,dst));
++ { int len; BAD(fdt_getprop(boot,src,"ranges",&len) && len==0); BAD(fdt_getprop(out,dst,"ranges",&len) && len==0); }
++ for (node=fdt_first_subnode(boot,src);node>=0;node=fdt_next_subnode(boot,node)) {
++  int n,nm,re; BAD(enabled(boot,node)); const void *reg=fdt_getprop(boot,node,"reg",&n); uint64_t b,s; int matched=0;
++  if (!reg) {
++   if (fdt_getprop(boot,node,"size",&n)) { TRY(dynamic_copy(boot,node,out,&dynamic_count,&dynamic_total)); *report|=OP12_FDT_DYNAMIC_FEATURES_DEFERRED; dst=fdt_path_offset(out,"/reserved-memory"); TRY(dst); continue; }
++   return -FDT_ERR_BADVALUE;
++  }
++  TRY(interval(reg,n,&b,&s)); if (!s) continue;
++  nm=flag(boot,node,"no-map"); re=flag(boot,node,"reusable"); TRY(nm); TRY(re); BAD(!(nm&&re));
++  matched=fixed_covered(out,dst,b,s,nm,re,report); TRY(matched); if (matched) continue;
++  BAD(++count<=64);
++  /* Unique deterministic name. Never copy vendor phandles or compatible. */
++  { char name[]="op12-boot-reserve-00"; int added;
++   name[18]="0123456789abcdef"[(count>>4)&15]; name[19]="0123456789abcdef"[count&15];
++   dst=fdt_path_offset(out,"/reserved-memory"); TRY(dst);
++   added=fdt_add_subnode(out,dst,name); TRY(added); TRY(fdt_setprop(out,added,"reg",reg,n));
++   if (nm) TRY(fdt_setprop(out,added,"no-map",0,0));
++   if (re) TRY(fdt_setprop(out,added,"reusable",0,0));
++  }
++  dst=fdt_path_offset(out,"/reserved-memory"); TRY(dst);
++ }
++ BAD(node==-FDT_ERR_NOTFOUND); return 0;
++}
++static int OP12_INIT chosen(const void *boot,void *out,const char *cmd,unsigned int *report)
++{
++ int src=fdt_path_offset(boot,"/chosen"),dst=fdt_path_offset(out,"/chosen"),prop,n;
++ uint64_t start=0,end=0; int have_start=0,have_end=0;
++ TRY(src); if (dst==-FDT_ERR_NOTFOUND) dst=fdt_add_subnode(out,0,"chosen"); TRY(dst);
++ for (prop=fdt_first_property_offset(out,dst);prop>=0;prop=fdt_next_property_offset(out,prop)) {
++  const char *name; const void *v=fdt_getprop_by_offset(out,prop,&name,&n); BAD(v && n>=0);
++  if (strcmp(name,"bootargs") && strcmp(name,"stdout-path") && strcmp(name,"kaslr-seed") && strcmp(name,"rng-seed") && strcmp(name,"linux,initrd-start") && strcmp(name,"linux,initrd-end") && strcmp(name,"phandle") && strcmp(name,"linux,phandle")) return OP12_FDT_UNKNOWN_CHOSEN;
++ }
++ BAD(prop==-FDT_ERR_NOTFOUND);
++ { static const char seeds[][16] OP12_DATA={"kaslr-seed","rng-seed"};
++  for (unsigned int i=0;i<2;++i) { int r=fdt_delprop(out,dst,seeds[i]); if (r<0 && r!=-FDT_ERR_NOTFOUND) return r; }
++ }
++ for (prop=fdt_first_property_offset(boot,src);prop>=0;prop=fdt_next_property_offset(boot,prop)) {
++  const char *name; const void *v=fdt_getprop_by_offset(boot,prop,&name,&n); BAD(v && n>=0);
++  if (!strcmp(name,"kaslr-seed") || !strcmp(name,"rng-seed")) {
++   BAD((!strcmp(name,"kaslr-seed") && n==8) || (!strcmp(name,"rng-seed") && n>0 && n<=1024));
++   TRY(fdt_setprop(out,dst,name,v,n));
++  } else if (!strcmp(name,"linux,initrd-start") || !strcmp(name,"linux,initrd-end")) {
++   BAD(n==8);
++   if (!strcmp(name,"linux,initrd-start")) { start=fdt64_ld(v); have_start=1; }
++   else { end=fdt64_ld(v); have_end=1; }
++  } else if (!strcmp(name,"bootargs")) *report|=OP12_FDT_BOOTARGS_REPLACED;
++  else if (!strcmp(name,"stdout-path")) *report|=OP12_FDT_STDOUT_DROPPED;
++  else if (strcmp(name,"phandle") && strcmp(name,"linux,phandle")) return OP12_FDT_UNKNOWN_CHOSEN;
++ }
++ BAD(prop==-FDT_ERR_NOTFOUND && have_start==have_end);
++ if (have_start) { BAD(start && end>start); TRY(fdt_add_mem_rsv(out,start,end-start)); *report|=OP12_FDT_INITRD_RESERVED_NOT_USED; }
++ /* Always remove external initrd selectors: built-in rescue root is required. */
++ { static const char names[][20] OP12_DATA={"linux,initrd-start","linux,initrd-end","stdout-path","kaslr-seed","rng-seed"};
++  for (unsigned int i=0;i<5;++i) {
++   /* Entropy was copied from boot; do not delete it. */
++   if (i>=3) continue;
++   int r=fdt_delprop(out,dst,names[i]); if (r<0 && r!=-FDT_ERR_NOTFOUND) return r;
++  }
++ }
++ /* No bootloader root/rdinit/vendor parameter is silently inherited. */
++ n=0; while (n<2048 && cmd[n]) ++n; BAD(n>0 && n<2048);
++ TRY(fdt_setprop(out,dst,"bootargs",cmd,n+1)); return 0;
++}
++int OP12_INIT op12_fdt_merge(const void *boot,unsigned int boot_bound,const void *target,
++ unsigned int target_bound,void *out,unsigned int capacity,const char *cmd,unsigned int *report)
++{
++ BAD(report && cmd && capacity==OP12_FDT_CAP && !((unsigned long)out&7)); *report=0;
++ TRY(valid(boot,boot_bound)); TRY(valid(target,target_bound));
++ TRY(noalias(boot,fdt_totalsize(boot),out,capacity)); TRY(noalias(target,fdt_totalsize(target),out,capacity));
++ TRY(two_cells(boot,0)); TRY(two_cells(target,0));
++ BAD(fdt_node_check_compatible(boot,0,"qcom,pineapple")==0);
++ BAD(fdt_node_check_compatible(target,0,"oneplus,waffle")==0);
++ TRY(fdt_open_into(target,out,capacity)); TRY(root_memory(boot,out));
++ TRY(copy_reserve_map(boot,out)); TRY(reservations(boot,out,report)); TRY(chosen(boot,out,cmd,report));
++ TRY(fdt_pack(out)); TRY(valid(out,capacity)); return 0;
++}
++
++/* All fallible checks/writes to selected output finish before original seeds
++ * are erased. Caller must provide the same writable original mapping it used
++ * for merge, then stop on any error; no partially prepared pointer is returned. */
++int OP12_INIT op12_fdt_retire_original(void *boot,unsigned int boot_bound,
++ void *out,unsigned int capacity,uint64_t original_physical)
++{
++ int old_chosen,new_chosen,old_len[2],new_len; void *old_value[2];
++ static const char seeds[][16] OP12_DATA={"kaslr-seed","rng-seed"};
++ BAD(capacity>=sizeof(struct fdt_header) && capacity<=OP12_FDT_CAP);
++ TRY(valid(boot,boot_bound)); TRY(valid(out,capacity));
++ TRY(noalias(boot,fdt_totalsize(boot),out,capacity));
++ BAD(original_physical && !(original_physical&7) &&
++     original_physical+fdt_totalsize(boot)>=original_physical);
++ old_chosen=fdt_path_offset(boot,"/chosen"); new_chosen=fdt_path_offset(out,"/chosen");
++ TRY(old_chosen); TRY(new_chosen);
++ for (unsigned int i=0;i<2;++i) {
++  const void *selected=fdt_getprop(out,new_chosen,seeds[i],&new_len);
++  old_value[i]=fdt_getprop_w(boot,old_chosen,seeds[i],&old_len[i]);
++  if (!old_value[i]) { BAD(old_len[i]==-FDT_ERR_NOTFOUND && !selected && new_len==-FDT_ERR_NOTFOUND); continue; }
++  BAD((i==0 && old_len[i]==8) || (i==1 && old_len[i]>0 && old_len[i]<=1024));
++  BAD(selected && new_len==old_len[i] && !memcmp(old_value[i],selected,new_len));
++ }
++ TRY(fdt_open_into(out,out,capacity));
++ TRY(fdt_add_mem_rsv(out,original_physical,fdt_totalsize(boot)));
++ TRY(fdt_pack(out));
++ for (unsigned int i=0;i<2;++i) if (old_value[i]) memset(old_value[i],0,old_len[i]);
++ return 0;
++}
+diff --git a/arch/arm64/kernel/pi/op12-fdt-merge.h b/arch/arm64/kernel/pi/op12-fdt-merge.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kernel/pi/op12-fdt-merge.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef OP12_FDT_MERGE_H
++#define OP12_FDT_MERGE_H
++#define OP12_FDT_CAP (2U * 1024U * 1024U)
++#define OP12_FDT_DYNAMIC_UNRESOLVED (-1001)
++#define OP12_FDT_UNKNOWN_CHOSEN (-1002)
++#define OP12_FDT_RESERVATION_CONFLICT (-1003)
++#define OP12_FDT_BOOTARGS_REPLACED 1U
++#define OP12_FDT_INITRD_RESERVED_NOT_USED 2U
++#define OP12_FDT_STDOUT_DROPPED 4U
++#define OP12_FDT_DYNAMIC_FEATURES_DEFERRED 8U
++#define OP12_FDT_FIXED_FEATURES_DEFERRED 16U
++int op12_fdt_merge(const void *boot, unsigned int boot_bound,
++                   const void *target, unsigned int target_bound,
++                   void *out, unsigned int capacity,
++                   const char *trusted_cmdline, unsigned int *report);
++int op12_fdt_retire_original(void *boot, unsigned int boot_bound,
++ void *out, unsigned int capacity, uint64_t original_physical);
++#ifdef __KERNEL__
++void op12_fdt_pointer_check(phys_addr_t original);
++phys_addr_t op12_fdt_prepare(phys_addr_t original);
++#endif
++#endif
+diff --git a/arch/arm64/kernel/pi/op12-fdt-entry.c b/arch/arm64/kernel/pi/op12-fdt-entry.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kernel/pi/op12-fdt-entry.c
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Default-off experiment; an error stops before any FDT consumers/drivers. */
++#include <linux/init.h>
++#include <linux/types.h>
++#include <linux/limits.h>
++#include <linux/libfdt.h>
++#include <asm/barrier.h>
++#include <asm/sections.h>
++#include "op12-fdt-merge.h"
++#include "op12-target-data.h"
++
++/* Permanent initialized .data, not BSS or initdata. Unflattened OF properties
++ * retain pointers into this blob after free_initmem(). Cost: 2 MiB permanent.
++ * This lies inside the Image idmap, not a bootloader DTB slot. */
++static unsigned char op12_fdt_output[OP12_FDT_CAP] __aligned(8) = { 1 };
++static const char op12_rescue_cmdline[] __initconst = CONFIG_CMDLINE;
++static volatile int op12_fdt_error __initdata = -1;
++static unsigned int op12_fdt_report __initdata;
++
++static void __init __noreturn op12_fdt_stop(int error)
++{
++ op12_fdt_error = error;
++ /* No timer/rescue is established this early. Physical recovery is required. */
++ for (;;) asm volatile("wfe" ::: "memory");
++}
++
++static unsigned int __init op12_original_bound(phys_addr_t original)
++{
++ phys_addr_t start=(phys_addr_t)(unsigned long)_text;
++ phys_addr_t end=(phys_addr_t)(unsigned long)_end;
++ unsigned int bound=OP12_FDT_CAP;
++ if (!original || (original & 7) || original > PHYS_ADDR_MAX-OP12_FDT_CAP ||
++     (original>=start && original<end)) op12_fdt_stop(-2);
++ /* Exact existing map_fdt() clips a below-Image mapping at _text. */
++ if (original<start && start-original<bound) bound=start-original;
++ if (bound<40) op12_fdt_stop(-3);
++ return bound;
++}
++void __init op12_fdt_pointer_check(phys_addr_t original)
++{
++ (void)op12_original_bound(original);
++}
++
++phys_addr_t __init op12_fdt_prepare(phys_addr_t original)
++{
++ int rc = op12_fdt_merge((const void *)(unsigned long)original, op12_original_bound(original),
++  op12_target_data, sizeof(op12_target_data), op12_fdt_output,
++  sizeof(op12_fdt_output), op12_rescue_cmdline, &op12_fdt_report);
++ if (rc) op12_fdt_stop(rc);
++ /* Reserves the original interval and redacts only its seed values after
++  * all fallible operations succeed. Selected entropy remains available. */
++ rc=op12_fdt_retire_original((void *)(unsigned long)original,
++  op12_original_bound(original),op12_fdt_output,sizeof(op12_fdt_output),original);
++ if (rc) op12_fdt_stop(rc);
++ dsb(ishst);
++ op12_fdt_error = 0;
++ return (phys_addr_t)(unsigned long)op12_fdt_output;
++}
+diff --git a/arch/arm64/kernel/pi/gen_op12_dtb.py b/arch/arm64/kernel/pi/gen_op12_dtb.py
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kernel/pi/gen_op12_dtb.py
+@@ -0,0 +1,8 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: GPL-2.0-only
++"""Embed only an explicitly supplied target DTB; no device/capture discovery."""
++import pathlib,struct,sys
++source,destination=map(pathlib.Path,sys.argv[1:]);data=source.read_bytes()
++if not 40<=len(data)<=2*1024*1024 or data[:4]!=b'\xd0\x0d\xfe\xed' or struct.unpack_from('>I',data,4)[0]!=len(data):raise SystemExit('Invalid/beyond-bound exact target DTB')
++text='/* Generated target template; validated again by bounded libfdt. */\nstatic const unsigned char op12_target_data[] __initconst __aligned(8) = {\n'
++text+='\n'.join(','.join(hex(v)for v in data[i:i+16])+','for i in range(0,len(data),16))+'\n};\n';destination.write_text(text)
+diff --git a/include/linux/op12_fdt_required.h b/include/linux/op12_fdt_required.h
+new file mode 100644
+--- /dev/null
++++ b/include/linux/op12_fdt_required.h
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef OP12_FDT_REQUIRED_H
++#define OP12_FDT_REQUIRED_H
++/* Internal opt-in preservation tag; not a vendor binding or consumer link. */
++#ifdef __KERNEL__
++#include <linux/init.h>
++#include <linux/libfdt.h>
++#define OP12_REQUIRED_INIT __init
++#else
++#include <libfdt.h>
++#define OP12_REQUIRED_INIT
++#include <stdint.h>
++#include <string.h>
++#endif
++/* Bounded duplicate-property rejection shared by PI and required OF hooks. */
++static inline int OP12_REQUIRED_INIT op12_fdt_unique_properties_bounded(const void *fdt,int node,unsigned int *budget)
++{
++ int prop,count=0;
++ for (prop=fdt_first_property_offset(fdt,node);prop>=0;prop=fdt_next_property_offset(fdt,prop)) {
++  int len,previous,nlen=0; const char *name;
++  if (++count>2048 || !fdt_getprop_by_offset(fdt,prop,&name,&len) || len<0) return -FDT_ERR_BADVALUE;
++  while (nlen<=128 && name[nlen]) ++nlen;
++  if (!nlen || nlen>128) return -FDT_ERR_BADVALUE;
++  for (previous=fdt_first_property_offset(fdt,node);previous>=0 && previous!=prop;previous=fdt_next_property_offset(fdt,previous)) {
++   const char *old;
++   if (!*budget) return -FDT_ERR_BADVALUE;
++   --*budget;
++   if (!fdt_getprop_by_offset(fdt,previous,&old,&len) || !strcmp(name,old)) return -FDT_ERR_BADVALUE;
++  }
++  if (previous!=prop) return -FDT_ERR_BADVALUE;
++ }
++ return prop==-FDT_ERR_NOTFOUND?0:prop;
++}
++static inline int OP12_REQUIRED_INIT op12_fdt_unique_properties(const void *fdt,int node)
++{
++ unsigned int budget=32; /* Required nodes permit at most six unique fields. */
++ return op12_fdt_unique_properties_bounded(fdt,node,&budget);
++}
++static inline int OP12_REQUIRED_INIT op12_required_validate(const void *fdt,int node)
++{
++ int len,prop; const void *tag=fdt_getprop(fdt,node,"op12,preserve-required",&len);
++ const fdt64_t *v; const char *name; uint64_t size;
++ if (!tag) return len==-FDT_ERR_NOTFOUND?0:len;
++ if (len) return -FDT_ERR_BADVALUE;
++ if (op12_fdt_unique_properties(fdt,node)) return -FDT_ERR_BADVALUE;
++ name=fdt_get_name(fdt,node,&len);
++ if (!name || len!=20 || memcmp(name,"op12-boot-dynamic-",18)) return -FDT_ERR_BADVALUE;
++ if (!((name[18]=='0' && ((name[19]>='1' && name[19]<='9') || (name[19]>='a' && name[19]<='f'))) || (name[18]=='1' && name[19]=='0'))) return -FDT_ERR_BADVALUE;
++ if (fdt_first_subnode(fdt,node)!=-FDT_ERR_NOTFOUND) return -FDT_ERR_BADVALUE;
++ for (prop=fdt_first_property_offset(fdt,node);prop>=0;prop=fdt_next_property_offset(fdt,prop)) {
++  const char *key; if (!fdt_getprop_by_offset(fdt,prop,&key,&len)) return -FDT_ERR_BADVALUE;
++  if (strcmp(key,"size") && strcmp(key,"alignment") && strcmp(key,"alloc-ranges") && strcmp(key,"no-map") && strcmp(key,"reusable") && strcmp(key,"op12,preserve-required")) return -FDT_ERR_BADVALUE;
++ }
++ if (prop!=-FDT_ERR_NOTFOUND) return prop;
++ v=fdt_getprop(fdt,node,"size",&len); if (!v || len!=8) return -FDT_ERR_BADVALUE;
++ size=fdt64_ld(v); if (!size || size>0x10000000ULL) return -FDT_ERR_BADVALUE;
++ v=fdt_getprop(fdt,node,"alignment",&len);
++ if (v) { uint64_t align; if (len!=8) return -FDT_ERR_BADVALUE; align=fdt64_ld(v); if (!align || (align&(align-1)) || align>0x400000ULL) return -FDT_ERR_BADVALUE; }
++ { int nm,re; const void *p=fdt_getprop(fdt,node,"no-map",&len); nm=p!=0; if (p && len) return -FDT_ERR_BADVALUE; p=fdt_getprop(fdt,node,"reusable",&len); re=p!=0; if (p && len) return -FDT_ERR_BADVALUE; if (nm && re) return -FDT_ERR_BADVALUE; }
++ v=fdt_getprop(fdt,node,"alloc-ranges",&len);
++ if (!v || len<16 || len>128 || len%16) return -FDT_ERR_BADVALUE;
++ for (int i=0;i<len/8;i+=2) { uint64_t b=fdt64_ld(v+i),s=fdt64_ld(v+i+1); if (!s || b+s<b) return -FDT_ERR_BADVALUE; }
++ return 1;
++}
++static inline int OP12_REQUIRED_INIT op12_required_account(const void *fdt,int node,unsigned int *count,uint64_t *total)
++{
++ int result=op12_required_validate(fdt,node),len; const fdt64_t *v; uint64_t size;
++ if (result<=0) return result;
++ v=fdt_getprop(fdt,node,"size",&len); size=fdt64_ld(v);
++ if (*count>=16 || *total>0x20000000ULL-size) return -FDT_ERR_BADVALUE;
++ ++*count; *total+=size; return 1;
++}
++static inline int OP12_REQUIRED_INIT op12_required_allocation_result(const void *fdt,int node,int result)
++{
++ int required=op12_required_validate(fdt,node);
++ return required<0?required:required && result?result:0;
++}
++static inline int OP12_REQUIRED_INIT op12_required_queue_result(const void *fdt,int node,unsigned int queued,unsigned int limit)
++{
++ int required=op12_required_validate(fdt,node);
++ return required<0?required:required && queued>=limit?-FDT_ERR_NOSPACE:0;
++}
++static inline int OP12_REQUIRED_INIT op12_required_completion(unsigned int accounted,unsigned int completed)
++{
++ return accounted==completed?0:-FDT_ERR_BADVALUE;
++}
++#endif

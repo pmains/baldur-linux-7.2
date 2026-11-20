@@ -1,0 +1,212 @@
+#!/bin/busybox sh
+
+bb() { /bin/busybox "$@"; }
+
+note() { printf "%s\n" "BALDUR-7.2.15-WIFI-01 $*"; printf '%s\n' "BALDUR-7.2.15-WIFI-01 $*" >> /run/stages; }
+
+configure() {
+	g=/sys/kernel/config/usb_gadget/baldur
+	bb mkdir "$g" || return 1
+	printf 0x1d6b > "$g/idVendor" || return 1
+	printf 0x0104 > "$g/idProduct" || return 1
+	printf 0x0200 > "$g/bcdUSB" || return 1
+	bb mkdir "$g/strings/0x409" || return 1
+	printf BALDUR7215WIFI01 > "$g/strings/0x409/serialnumber" || return 1
+	printf Baldur > "$g/strings/0x409/manufacturer" || return 1
+	printf 'Baldur Linux 7.2.15 wifi diagnostic' > "$g/strings/0x409/product" || return 1
+	bb mkdir "$g/configs/c.1" "$g/functions/acm.usb0" "$g/functions/ecm.usb0" || return 1
+	printf 02:12:00:00:00:02 > "$g/functions/ecm.usb0/dev_addr" || return 1
+	printf 02:12:00:00:00:01 > "$g/functions/ecm.usb0/host_addr" || return 1
+	bb ln -s "$g/functions/acm.usb0" "$g/configs/c.1/acm.usb0" || return 1
+	bb ln -s "$g/functions/ecm.usb0" "$g/configs/c.1/ecm.usb0" || return 1
+}
+
+bind() {
+	tries=0
+	while [ "$tries" -lt 2 ]; do
+		set -- /sys/class/udc/*
+		if [ "$#" -eq 1 ] && [ -e "$1" ]; then
+			if printf '%s\n' "${1##*/}" > "$g/UDC"; then
+				note "UDC_BOUND ${1##*/}"
+				return 0
+			fi
+		elif [ "$#" -gt 1 ]; then
+			note UDC_AMBIGUOUS
+			return 1
+		fi
+		tries=$((tries + 1))
+		bb sleep 1
+	done
+	note UDC_WAIT_EXPIRED
+	return 1
+}
+
+mount_root() {
+	i=0
+	while [ "$i" -lt 60 ]; do
+		[ -b /dev/sda14 ] && break
+		i=$((i + 1))
+		bb sleep 1
+	done
+	[ -b /dev/sda14 ] || {
+		note ROOTFS_DEVICE_ABSENT
+		{
+			printf 'UFS_DEVICES\n'
+			bb ls -l /dev/sd* 2>&1
+			bb cat /proc/partitions
+			printf 'UFS_LOG\n'
+			bb dmesg | bb grep -iE 'ufshc|ufs_|scsi|sd [0-9]' | bb tail -n 40
+		} >> /run/stages 2>&1
+		return 1
+	}
+	bb blockdev --setro /dev/sda14 2>/dev/null && note BLOCKDEV_SETRO || note BLOCKDEV_SETRO_FAILED
+	bb mount -t ext4 -o ro,noload /dev/sda14 /mnt || { note ROOTFS_MOUNT_FAILED; return 1; }
+	if bb grep -q " /mnt ext4 ro," /proc/mounts; then
+		note ROOTFS_MOUNTED_RO
+		root_ok=1
+		return 0
+	fi
+	note ROOTFS_NOT_RO
+	return 1
+}
+
+usb0_setup() {
+	i=0
+	while [ "$i" -lt 5 ]; do
+		[ -e /sys/class/net/usb0 ] && break
+		i=$((i + 1))
+		bb sleep 1
+	done
+	[ -e /sys/class/net/usb0 ] || { note USB0_ABSENT; return 1; }
+	bb ifconfig usb0 192.168.212.2 netmask 255.255.255.252 up 2>/dev/null || bb ifconfig usb0 up
+	note USB0_UP
+}
+
+start_sshd() {
+	[ -d /mnt/usr ] || return 1
+	bb mount -o bind /dev /mnt/dev 2>/dev/null || true
+	bb mount -t devpts devpts /mnt/dev/pts 2>/dev/null || true
+	bb mount -o bind /proc /mnt/proc 2>/dev/null || true
+	bb mount -o bind /sys /mnt/sys 2>/dev/null || true
+	bb mount -o bind /run /mnt/run 2>/dev/null || true
+	bb mount -o bind /tmp /mnt/tmp 2>/dev/null || true
+	bb mkdir -p /mnt/run/sshd
+	bb chroot /mnt /usr/bin/sshd -D -e -p 2222 -o AddressFamily=any -o ListenAddress=:: -o LogLevel=DEBUG3 > /run/sshd.log 2>&1 &
+	SSHD_PID=$!
+	bb sleep 1
+	if kill -0 "$SSHD_PID" 2>/dev/null; then
+		note SSHD_RUNNING
+	else
+		note SSHD_FAILED
+	fi
+}
+
+report() {
+	note REPORT_READY
+	{
+		printf '\nBALDUR-7.2.15-WIFI-01 PID1_NET_REPORT\n'
+		bb uname -r
+		bb sha256sum /sys/kernel/notes /init /bin/busybox
+		bb cat /proc/sys/kernel/random/boot_id /run/stages
+		printf 'USB0\n'
+		bb ifconfig usb0 2>&1
+		printf 'SSHD_LOG\n'
+		bb tail -n 30 /run/sshd.log 2>/dev/null
+		printf 'LISTEN\n'
+		bb netstat -ltn 2>/dev/null | bb grep 2222
+		printf 'UFS_LOG\n'
+		bb dmesg | bb grep -iE 'ufshc|ufs_|sd [0-9]' 2>/dev/null | bb tail -n 20
+		printf 'PCI\n'
+		bb chroot /mnt /usr/bin/lspci -nn 2>&1 | bb head -n 20
+		printf 'IEEE80211\n'
+		bb ls /sys/class/ieee80211 2>/dev/null
+		printf 'ATH_LOG\n'
+		bb dmesg | bb grep -iE 'BALDUR_SCANOUT|BALDUR_MHI|mhi|ath12k|pcie|wcn|firmware' 2>/dev/null | bb tail -n 80 | bb head -c 6144
+		printf 'UFS_TRACE\n'
+		bb dmesg | bb grep -iE 'ufshc|ufs_|ufsphy|deferred|probe.*(fail|defer)|tlmm|pinctrl|hog' 2>/dev/null | bb tail -n 60 | bb head -c 4000
+		printf 'PLATFORM\n'
+		for d in /sys/bus/platform/devices/*ufs*; do
+			[ -e "$d" ] || continue
+			printf '%s ' "$d"
+			bb readlink "$d/driver" 2>/dev/null || printf 'NO_DRIVER'
+			printf '\n'
+		done
+		printf 'DEBUGFS\n'
+		[ -d /sys/kernel/debug ] && bb ls /sys/kernel/debug 2>/dev/null | bb head -n 3
+		printf 'DEVICES_DEFERRED\n'
+		bb cat /sys/kernel/debug/devices_deferred 2>/dev/null | bb head -n 30
+		printf 'GPIOCHIPS\n'
+		bb grep -E '^gpiochip' /sys/kernel/debug/gpio 2>/dev/null
+		printf 'GPIO_LINES\n'
+		bb cat /sys/kernel/debug/gpio 2>/dev/null
+		printf 'WLAN_RAILS\n'
+		bb grep -Ei 'wcn|op12_smp|op12_ldoc3|ldob15' /sys/kernel/debug/regulator/regulator_summary 2>/dev/null
+		printf 'WLAN_CLOCK\n'
+		bb grep -Ei 'rf.*clk|clk1_a1|clka1' /sys/kernel/debug/clk/clk_summary 2>/dev/null
+		printf 'RO_MOUNT\n'
+		bb grep " /mnt " /proc/mounts
+		printf '\nROOTFS_PROOF\n'
+		bb chroot /mnt /bin/bash -c 'export PATH=/usr/bin:/bin:/usr/sbin:/sbin; echo BASH_OK; uname -a; id; cat /etc/os-release 2>/dev/null | head -n 3' 2>&1
+		printf '\nBALDUR-7.2.15-WIFI-01 END_REPORT\n'
+	} > /run/report
+}
+
+# udev/RTC changes cannot move this clock.
+monotonic_seconds() {
+	bb cut -d. -f1 /proc/uptime
+}
+
+send_report() {
+	for attempt in 1 2 3; do
+		[ -c /dev/ttyGS0 ] || return
+		bb timeout -k 1 6 /bin/busybox sh -c 'exec /bin/busybox cat /run/report > /dev/ttyGS0' || true
+		bb sleep 1
+	done
+}
+
+serve_lease() {
+	started=$(monotonic_seconds)
+	hard=$((started + 1200))
+	expires=$((started + 180))
+	while :; do
+		now=$(monotonic_seconds)
+		[ "$now" -lt "$expires" ] || break
+		[ ! -e /run/poweroff ] || break
+		if [ -f /run/baldur-session/renew ]; then
+			bb rm -f /run/baldur-session/renew
+			expires=$((now + 180))
+			[ "$expires" -le "$hard" ] || expires=$hard
+		fi
+		printf 'uptime=%s\nexpires=%s\nhard_limit=%s\n' "$now" "$expires" "$hard" > /run/baldur-session/status
+		bb sleep 2
+	done
+}
+
+main() {
+	bb mount -t devtmpfs devtmpfs /dev || return 1
+	bb mkdir -p /dev/pts
+	bb mount -t devpts devpts /dev/pts 2>/dev/null || true
+	bb mount -t proc proc /proc || return 1
+	bb mount -t sysfs sysfs /sys || return 1
+	bb mkdir -p /sys/kernel/debug
+	bb mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+	bb mount -t configfs configfs /sys/kernel/config || return 1
+	note PID1
+	configure && bind || return 1
+	root_ok=0
+	mount_root || true
+	usb0_setup || true
+	start_sshd || true
+	bb mkdir -m 0700 /run/baldur-session
+	report
+	send_report &
+	report_pid=$!
+	serve_lease
+	kill "$report_pid" 2>/dev/null || true
+	note ALIVE_DONE
+	printf '\n' > "$g/UDC"
+}
+
+printf "%s\n" "BALDUR-7.2.15-WIFI-01 RAM_INIT_REACHED"
+main || { note STARTUP_FAILED; bb sleep 8; }
+exec /bin/busybox poweroff -f

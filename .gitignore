@@ -1,0 +1,9 @@
+/build/
+/out/
+/local-inputs/
+*.img
+*.dtb
+*.bin
+*.mdt
+*.tar.xz
+__pycache__/

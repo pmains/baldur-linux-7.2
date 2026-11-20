@@ -1,0 +1,120 @@
+diff --git a/drivers/bus/mhi/host/boot.c b/drivers/bus/mhi/host/boot.c
+--- a/drivers/bus/mhi/host/boot.c
++++ b/drivers/bus/mhi/host/boot.c
+@@ -261,7 +261,7 @@
+ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
+ 	rwlock_t *pm_lock = &mhi_cntrl->pm_lock;
+ 	void __iomem *base = mhi_cntrl->bhi;
+-	u32 tx_status, session_id;
++	u32 tx_status = 0, session_id;
+ 	int ret;
+ 
+ 	read_lock_bh(pm_lock);
+@@ -280,12 +280,16 @@
+ 	mhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);
+ 	read_unlock_bh(pm_lock);
+ 
++	dev_info(dev, "BALDUR_MHI BHI doorbell len=%zu seq=%u\n", mhi_buf->len, session_id);
++
+ 	/* Wait for the image download to complete */
+ 	ret = wait_event_timeout(mhi_cntrl->state_event,
+ 			   MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
+ 			   mhi_read_reg_field(mhi_cntrl, base, BHI_STATUS,
+ 					      BHI_STATUS_MASK, &tx_status) || tx_status,
+ 			   msecs_to_jiffies(mhi_cntrl->timeout_ms));
++	dev_info(dev, "BALDUR_MHI BHI wait=%d status=%u pm=%#x\n",
++		 ret, tx_status, mhi_cntrl->pm_state);
+ 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+ 		goto invalid_pm_state;
+ 
+@@ -493,6 +497,7 @@
+ 	if (ret)
+ 		dev_err(dev, "Could not capture serial number via BHI\n");
+ 
++	dev_info(dev, "BALDUR_MHI firmware handler ee=%u\n", mhi_cntrl->ee);
+ 	/* wait for ready on pass through or any other execution environment */
+ 	if (!MHI_FW_LOAD_CAPABLE(mhi_cntrl->ee))
+ 		goto fw_load_ready_state;
+diff --git a/drivers/bus/mhi/host/main.c b/drivers/bus/mhi/host/main.c
+--- a/drivers/bus/mhi/host/main.c
++++ b/drivers/bus/mhi/host/main.c
+@@ -545,6 +545,9 @@
+ {
+ 	struct mhi_controller *mhi_cntrl = dev;
+ 
++	dev_info_ratelimited(&mhi_cntrl->mhi_dev->dev,
++			     "BALDUR_MHI intvec IRQ %d pm=%#x\n",
++			     irq_number, mhi_cntrl->pm_state);
+ 	/* Wake up events waiting for state change */
+ 	wake_up_all(&mhi_cntrl->state_event);
+ 
+diff --git a/drivers/bus/mhi/host/pm.c b/drivers/bus/mhi/host/pm.c
+--- a/drivers/bus/mhi/host/pm.c
++++ b/drivers/bus/mhi/host/pm.c
+@@ -176,6 +176,8 @@
+ 	u32 timeout_ms;
+ 	int ret, i;
+ 
++	dev_info(dev, "BALDUR_MHI ready entry ee=%u state=%u pm=%#x\n",
++		 mhi_cntrl->ee, mhi_cntrl->dev_state, mhi_cntrl->pm_state);
+ 	/* Check if device entered error state */
+ 	if (MHI_PM_IN_FATAL_STATE(mhi_cntrl->pm_state)) {
+ 		dev_err(dev, "Device link is not accessible\n");
+@@ -1159,6 +1161,16 @@
+ 	}
+ 
+ 	state = mhi_get_mhi_state(mhi_cntrl);
++	{
++		u32 status = U32_MAX, ctrl = U32_MAX;
++
++		if (mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, MHISTATUS, &status))
++			status = U32_MAX;
++		if (mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, MHICTRL, &ctrl))
++			ctrl = U32_MAX;
++		dev_info(dev, "BALDUR_MHI initial ee=%u state=%u status=%#x ctrl=%#x irq=%d\n",
++			 current_ee, state, status, ctrl, mhi_cntrl->irq[0]);
++	}
+ 	dev_dbg(dev, "Attempting power on with EE: %s, state: %s\n",
+ 		TO_MHI_EXEC_STR(current_ee), mhi_state_str(state));
+ 
+@@ -1291,6 +1303,9 @@
+ 			   msecs_to_jiffies(timeout_ms));
+ 
+ 	ret = (MHI_IN_MISSION_MODE(mhi_cntrl->ee)) ? 0 : -ETIMEDOUT;
++	dev_info(&mhi_cntrl->mhi_dev->dev,
++		 "BALDUR_MHI sync result=%d ee=%u state=%u pm=%#x timeout=%u\n",
++		 ret, mhi_cntrl->ee, mhi_cntrl->dev_state, mhi_cntrl->pm_state, timeout_ms);
+ 	if (ret)
+ 		mhi_power_down(mhi_cntrl, false);
+ 
+diff --git a/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c b/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c
+--- a/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c
++++ b/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c
+@@ -5382,7 +5382,12 @@
+ 						    ARRAY_SIZE(args), args);
+ 	if (IS_ERR(tcsr)) {
+ 		ret = PTR_ERR(tcsr);
+-		if (ret == -ENOENT)
++		/*
++		 * The 4-lane configuration selector is optional. Vendor
++		 * loader DTs may point it at a non-syscon TCSR node; treat
++		 * that like a missing property instead of failing the PHY.
++		 */
++		if (ret == -ENOENT || ret == -ENOTSUPP)
+ 			return 0;
+ 
+ 		dev_err(qmp->dev, "failed to lookup syscon: %d\n", ret);
+diff --git a/drivers/soc/qcom/pmic_glink.c b/drivers/soc/qcom/pmic_glink.c
+--- a/drivers/soc/qcom/pmic_glink.c
++++ b/drivers/soc/qcom/pmic_glink.c
+@@ -390,9 +390,7 @@
+ }
+ 
+ static const struct pmic_glink_data pmic_glink_adsp_data = {
+-	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
+-		       BIT(PMIC_GLINK_CLIENT_ALTMODE) |
+-		       BIT(PMIC_GLINK_CLIENT_UCSI),
++	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT),
+ 	.charger_pdr_service_name = "tms/servreg",
+ 	.charger_pdr_service_path = "msm/adsp/charger_pd",
+ };
