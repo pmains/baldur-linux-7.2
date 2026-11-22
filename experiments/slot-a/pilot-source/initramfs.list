@@ -1,0 +1,103 @@
+dir /bin 0755 0 0
+dir /dev 0755 0 0
+dir /etc 0755 0 0
+dir /lib 0755 0 0
+dir /lib/firmware 0755 0 0
+dir /lib/firmware/ath12k 0755 0 0
+dir /lib/firmware/ath12k/WCN7850 0755 0 0
+dir /lib/firmware/ath12k/WCN7850/hw2.0 0755 0 0
+dir /mnt 0755 0 0
+dir /proc 0755 0 0
+dir /run 0755 0 0
+dir /sys 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+file /init /probe/init 0755 0 0
+file /bin/busybox /project/wifi-output/busybox 0755 0 0
+file /lib/ld-musl-aarch64.so.1 /project/wifi-output/ld-musl-aarch64.so.1 0755 0 0
+file /lib/firmware/ath12k/WCN7850/hw2.0/amss.bin /project/wifi-output/firmware/ath12k/WCN7850/hw2.0/amss.bin 0644 0 0
+file /lib/firmware/ath12k/WCN7850/hw2.0/m3.bin /project/wifi-output/firmware/ath12k/WCN7850/hw2.0/m3.bin 0644 0 0
+file /lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin /project/wifi-output/firmware/ath12k/WCN7850/hw2.0/board-2.bin 0644 0 0
+file /lib/firmware/ath12k/WCN7850/hw2.0/board.bin /project/wifi-output/firmware/ath12k/WCN7850/hw2.0/board.bin 0644 0 0
+file /lib/firmware/cdsp.mdt /probe/cdsp.mdt 0644 0 0
+file /lib/firmware/cdsp_dtb.mdt /probe/cdsp_dtb.mdt 0644 0 0
+file /lib/firmware/cdsp.b00 /probe/cdsp.b00 0644 0 0
+file /lib/firmware/cdsp.b01 /probe/cdsp.b01 0644 0 0
+file /lib/firmware/cdsp.b02 /probe/cdsp.b02 0644 0 0
+file /lib/firmware/cdsp.b03 /probe/cdsp.b03 0644 0 0
+file /lib/firmware/cdsp.b04 /probe/cdsp.b04 0644 0 0
+file /lib/firmware/cdsp.b05 /probe/cdsp.b05 0644 0 0
+file /lib/firmware/cdsp.b06 /probe/cdsp.b06 0644 0 0
+file /lib/firmware/cdsp.b07 /probe/cdsp.b07 0644 0 0
+file /lib/firmware/cdsp.b08 /probe/cdsp.b08 0644 0 0
+file /lib/firmware/cdsp.b09 /probe/cdsp.b09 0644 0 0
+file /lib/firmware/cdsp.b10 /probe/cdsp.b10 0644 0 0
+file /lib/firmware/cdsp.b11 /probe/cdsp.b11 0644 0 0
+file /lib/firmware/cdsp.b12 /probe/cdsp.b12 0644 0 0
+file /lib/firmware/cdsp.b13 /probe/cdsp.b13 0644 0 0
+file /lib/firmware/cdsp.b15 /probe/cdsp.b15 0644 0 0
+file /lib/firmware/cdsp_dtb.b00 /probe/cdsp_dtb.b00 0644 0 0
+file /lib/firmware/cdsp_dtb.b01 /probe/cdsp_dtb.b01 0644 0 0
+file /lib/firmware/cdsp_dtb.b02 /probe/cdsp_dtb.b02 0644 0 0
+file /lib/firmware/adsp.b01 /probe/firmware/adsp.b01 0644 0 0
+file /lib/firmware/adsp.b02 /probe/firmware/adsp.b02 0644 0 0
+file /lib/firmware/adsp.b03 /probe/firmware/adsp.b03 0644 0 0
+file /lib/firmware/adsp.b04 /probe/firmware/adsp.b04 0644 0 0
+file /lib/firmware/adsp.b05 /probe/firmware/adsp.b05 0644 0 0
+file /lib/firmware/adsp.b06 /probe/firmware/adsp.b06 0644 0 0
+file /lib/firmware/adsp.b07 /probe/firmware/adsp.b07 0644 0 0
+file /lib/firmware/adsp.b08 /probe/firmware/adsp.b08 0644 0 0
+file /lib/firmware/adsp.b09 /probe/firmware/adsp.b09 0644 0 0
+file /lib/firmware/adsp.b10 /probe/firmware/adsp.b10 0644 0 0
+file /lib/firmware/adsp.b11 /probe/firmware/adsp.b11 0644 0 0
+file /lib/firmware/adsp.b12 /probe/firmware/adsp.b12 0644 0 0
+file /lib/firmware/adsp.b13 /probe/firmware/adsp.b13 0644 0 0
+file /lib/firmware/adsp.b14 /probe/firmware/adsp.b14 0644 0 0
+file /lib/firmware/adsp.b15 /probe/firmware/adsp.b15 0644 0 0
+file /lib/firmware/adsp.b16 /probe/firmware/adsp.b16 0644 0 0
+file /lib/firmware/adsp.b17 /probe/firmware/adsp.b17 0644 0 0
+file /lib/firmware/adsp.b18 /probe/firmware/adsp.b18 0644 0 0
+file /lib/firmware/adsp.b19 /probe/firmware/adsp.b19 0644 0 0
+file /lib/firmware/adsp.b20 /probe/firmware/adsp.b20 0644 0 0
+file /lib/firmware/adsp.b21 /probe/firmware/adsp.b21 0644 0 0
+file /lib/firmware/adsp.b22 /probe/firmware/adsp.b22 0644 0 0
+file /lib/firmware/adsp.b23 /probe/firmware/adsp.b23 0644 0 0
+file /lib/firmware/adsp.b25 /probe/firmware/adsp.b25 0644 0 0
+file /lib/firmware/adsp.b26 /probe/firmware/adsp.b26 0644 0 0
+file /lib/firmware/adsp.b27 /probe/firmware/adsp.b27 0644 0 0
+file /lib/firmware/adsp.b28 /probe/firmware/adsp.b28 0644 0 0
+file /lib/firmware/adsp.b29 /probe/firmware/adsp.b29 0644 0 0
+file /lib/firmware/adsp.b30 /probe/firmware/adsp.b30 0644 0 0
+file /lib/firmware/adsp.b31 /probe/firmware/adsp.b31 0644 0 0
+file /lib/firmware/adsp.b32 /probe/firmware/adsp.b32 0644 0 0
+file /lib/firmware/adsp.b33 /probe/firmware/adsp.b33 0644 0 0
+file /lib/firmware/adsp.b34 /probe/firmware/adsp.b34 0644 0 0
+file /lib/firmware/adsp.b35 /probe/firmware/adsp.b35 0644 0 0
+file /lib/firmware/adsp.b36 /probe/firmware/adsp.b36 0644 0 0
+file /lib/firmware/adsp.b37 /probe/firmware/adsp.b37 0644 0 0
+file /lib/firmware/adsp.b38 /probe/firmware/adsp.b38 0644 0 0
+file /lib/firmware/adsp.b39 /probe/firmware/adsp.b39 0644 0 0
+file /lib/firmware/adsp.b40 /probe/firmware/adsp.b40 0644 0 0
+file /lib/firmware/adsp.b41 /probe/firmware/adsp.b41 0644 0 0
+file /lib/firmware/adsp.b42 /probe/firmware/adsp.b42 0644 0 0
+file /lib/firmware/adsp.b43 /probe/firmware/adsp.b43 0644 0 0
+file /lib/firmware/adsp.b44 /probe/firmware/adsp.b44 0644 0 0
+file /lib/firmware/adsp.b45 /probe/firmware/adsp.b45 0644 0 0
+file /lib/firmware/adsp.b46 /probe/firmware/adsp.b46 0644 0 0
+file /lib/firmware/adsp.b47 /probe/firmware/adsp.b47 0644 0 0
+file /lib/firmware/adsp.b48 /probe/firmware/adsp.b48 0644 0 0
+file /lib/firmware/adsp.b49 /probe/firmware/adsp.b49 0644 0 0
+file /lib/firmware/adsp.b50 /probe/firmware/adsp.b50 0644 0 0
+file /lib/firmware/adsp.b51 /probe/firmware/adsp.b51 0644 0 0
+file /lib/firmware/adsp.b52 /probe/firmware/adsp.b52 0644 0 0
+file /lib/firmware/adsp.b53 /probe/firmware/adsp.b53 0644 0 0
+file /lib/firmware/adsp.b54 /probe/firmware/adsp.b54 0644 0 0
+file /lib/firmware/adsp.mdt /probe/firmware/adsp.mdt 0644 0 0
+file /lib/firmware/adsp_dtb.b01 /probe/firmware/adsp_dtb.b01 0644 0 0
+file /lib/firmware/adsp_dtb.mdt /probe/firmware/adsp_dtb.mdt 0644 0 0
+dir /lib/firmware/qcom 0755 0 0
+dir /lib/firmware/qcom/sm8650 0755 0 0
+file /lib/firmware/qcom/gen70900_sqe.fw /probe/firmware/gpu/gen70900_sqe.fw 0644 0 0
+file /lib/firmware/qcom/gen70900_aqe.fw /probe/firmware/gpu/gen70900_aqe.fw 0644 0 0
+file /lib/firmware/qcom/gmu_gen70900.bin /probe/firmware/gpu/gmu_gen70900.bin 0644 0 0
+file /lib/firmware/qcom/sm8650/gen70900_zap.mbn /probe/firmware/gpu/gen70900_zap.mbn 0644 0 0
+file /vt-console.sh /probe/display-pattern.sh 0755 0 0

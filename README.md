@@ -34,3 +34,7 @@ The **Verified** column records what ran together on one OnePlus 12 in the [Deve
 | System power management | | End-to-end suspend/resume |
 
 Related trials used different RAM images. Those trials demonstrated a readable tty1 banner through the firmware display handoff, a USB cable reconnect with both ACM and SSH recovery, and an Adreno chip-ID read. The preview matrix counts only the checks repeated on the tagged image.
+
+## Later combined pilot
+
+[Combined image and slot A bring-up](docs/pilot-bringup.md) records the subsequent RAM-boot and inference results, the verified header workaround, and the remaining installed-boot blocker. The corresponding experimental source and probe code are under `experiments/`.

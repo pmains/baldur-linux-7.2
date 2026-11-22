@@ -1,0 +1,95 @@
+--- a/arch/arm64/kernel/pi/op12-fdt-merge.c
++++ b/arch/arm64/kernel/pi/op12-fdt-merge.c
+@@ -28,11 +28,50 @@
+ /* Primary-CPU-only scratch: integers, no pointers/heap/absolute relocations.
+  * A bounded open-addressed set replaces repeated whole-tree handle lookups. */
+ static unsigned int validation_handles[16384] OP12_WORK = {1};
+-static int OP12_INIT valid(const void *p, unsigned int bound)
++/* This bootloader-only node can exceed the ordinary quadratic name budget.
++ * Retain exact duplicate detection with fixed scratch and a fixed probe cap.
++ */
++#define OP12_SYMBOL_SLOTS 8192U
++#define OP12_SYMBOL_LIMIT 4096U
++static unsigned int symbol_properties[OP12_SYMBOL_SLOTS] OP12_WORK = {1};
++
++static int OP12_INIT unique_boot_symbols(const void *fdt, int node)
++{
++ unsigned int count=0, probes=16384;
++ int prop;
++ memset(symbol_properties,0,sizeof(symbol_properties));
++ for (prop=fdt_first_property_offset(fdt,node);prop>=0;prop=fdt_next_property_offset(fdt,prop)) {
++  const char *name;
++  unsigned int hash=2166136261U, slot, n=0;
++  int len;
++  BAD(++count<=OP12_SYMBOL_LIMIT && fdt_getprop_by_offset(fdt,prop,&name,&len) && len>=0);
++  while (n<=128 && name[n]) {
++   hash=(hash^(unsigned char)name[n])*16777619U;
++   ++n;
++  }
++  BAD(n && n<=128);
++  slot=hash&(OP12_SYMBOL_SLOTS-1);
++  for (;;) {
++   const char *old;
++   BAD(probes);
++   --probes;
++   if (!symbol_properties[slot]) {
++    symbol_properties[slot]=(unsigned int)prop+1;
++    break;
++   }
++   BAD(fdt_getprop_by_offset(fdt,(int)(symbol_properties[slot]-1),&old,&len) &&
++       strcmp(name,old));
++   slot=(slot+1)&(OP12_SYMBOL_SLOTS-1);
++  }
++ }
++ return prop==-FDT_ERR_NOTFOUND?0:prop;
++}
++
++static int OP12_INIT valid(const void *p, unsigned int bound, int boot_source)
+ {
+  int at = 0, next = 0, depth = -1, roots = 0, nodes = 0;
+  unsigned int total, comparisons=2097152, probes=65536;
+- int parents[65], chosen_count=0, reserved_count=0, reserved_node=-1;
++ int parents[65], chosen_count=0, reserved_count=0, reserved_node=-1, symbols_seen=0;
+  memset(validation_handles,0,sizeof(validation_handles));
+  BAD(bound >= sizeof(struct fdt_header) && bound <= OP12_FDT_CAP);
+  TRY(fdt_check_header(p)); BAD(fdt_version(p)==17); total = fdt_totalsize(p);
+@@ -45,7 +84,12 @@
+    BAD(name && len>=0 && len<=128 && ++nodes<=8192); BAD(++depth<=64);
+    parents[depth]=at;
+    if (depth==0) { BAD(len==0); ++roots; }
+-   TRY(op12_fdt_unique_properties_bounded(p,at,&comparisons));
++   if (boot_source && depth==1 && !strcmp(name,"__symbols__")) {
++    BAD(!symbols_seen++);
++    TRY(unique_boot_symbols(p,at));
++   } else {
++    TRY(op12_fdt_unique_properties_bounded(p,at,&comparisons));
++   }
+    if (depth==1) {
+     BAD(strncmp(name,"chosen@",7) && strncmp(name,"reserved-memory@",16));
+     if (!strcmp(name,"chosen")) BAD(++chosen_count==1);
+@@ -330,14 +374,14 @@
+  unsigned int target_bound,void *out,unsigned int capacity,const char *cmd,unsigned int *report)
+ {
+  BAD(report && cmd && capacity==OP12_FDT_CAP && !((unsigned long)out&7)); *report=0;
+- TRY(valid(boot,boot_bound)); TRY(valid(target,target_bound));
++ TRY(valid(boot,boot_bound,1)); TRY(valid(target,target_bound,0));
+  TRY(noalias(boot,fdt_totalsize(boot),out,capacity)); TRY(noalias(target,fdt_totalsize(target),out,capacity));
+  TRY(two_cells(boot,0)); TRY(two_cells(target,0));
+  BAD(fdt_node_check_compatible(boot,0,"qcom,pineapple")==0);
+  BAD(fdt_node_check_compatible(target,0,"oneplus,waffle")==0);
+  TRY(fdt_open_into(target,out,capacity)); TRY(root_memory(boot,out));
+  TRY(copy_reserve_map(boot,out)); TRY(reservations(boot,out,report)); TRY(chosen(boot,out,cmd,report));
+- TRY(fdt_pack(out)); TRY(valid(out,capacity)); return 0;
++ TRY(fdt_pack(out)); TRY(valid(out,capacity,0)); return 0;
+ }
+ 
+ /* All fallible checks/writes to selected output finish before original seeds
+@@ -349,7 +393,7 @@
+  int old_chosen,new_chosen,old_len[2],new_len; void *old_value[2];
+  static const char seeds[][16] OP12_DATA={"kaslr-seed","rng-seed"};
+  BAD(capacity>=sizeof(struct fdt_header) && capacity<=OP12_FDT_CAP);
+- TRY(valid(boot,boot_bound)); TRY(valid(out,capacity));
++ TRY(valid(boot,boot_bound,1)); TRY(valid(out,capacity,0));
+  TRY(noalias(boot,fdt_totalsize(boot),out,capacity));
+  BAD(original_physical && !(original_physical&7) &&
+      original_physical+fdt_totalsize(boot)>=original_physical);

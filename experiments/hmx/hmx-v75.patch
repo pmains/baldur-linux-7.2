@@ -1,0 +1,34 @@
+--- a/ggml/src/ggml-hexagon/htp/main.c
++++ b/ggml/src/ggml-hexagon/htp/main.c
+@@ -638,7 +638,15 @@
+         request.hmx_v2.min_corner    = pwr->hmx_min_corner;
+         request.hmx_v2.max_corner    = pwr->hmx_max_corner;
+         request.hmx_v2.perf_mode     = pwr->hmx_perf_mode;
+-        FARF(ALWAYS, "Setting HMX clock\n");
++#ifdef BALDUR_HMX_CORNER
++        if (power_mode == HTP_POWER_MODE_LOW_POWER_SAVER) {
++            request.hmx_v2.min_corner = BALDUR_HMX_CORNER;
++            request.hmx_v2.target_corner = BALDUR_HMX_CORNER;
++            request.hmx_v2.max_corner = BALDUR_HMX_CORNER;
++        }
++#endif
++        FARF(ALWAYS, "BALDUR_HMX vote perf=%d corner=%d",
++             (int) request.hmx_v2.perf_mode, (int) request.hmx_v2.target_corner);
+         err = HAP_power_set((void *) ctx, &request);
+         if (err != AEE_SUCCESS) {
+             FARF(ERROR, "ggml-hex: error setting HMX clock.");
+@@ -663,6 +671,14 @@
+     }
+ #endif
+ 
++    {
++        HAP_power_response_t hmx = { .type = HAP_power_get_hmx_core_clk_Freq };
++        HAP_power_response_t core = { .type = HAP_power_get_clk_Freq };
++        int hmx_rc = HAP_power_get(NULL, &hmx);
++        int core_rc = HAP_power_get(NULL, &core);
++        FARF(ALWAYS, "BALDUR_HMX readback hmx_rc=%d hmx_hz=%u core_rc=%d core_hz=%u",
++             hmx_rc, hmx.clkFreqHz, core_rc, core.clkFreqHz);
++    }
+     ctx->n_threads = n_threads;
+     ctx->n_hvx     = n_hvx;
+     ctx->n_hvx_div = init_fastdiv_values(ctx->n_hvx);
